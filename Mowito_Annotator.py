@@ -8,17 +8,53 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageTk
-from pycocotools import mask
+from pycocotools import mask as cocomask
+from pycocotools import coco as cocoapi
 from segment_anything import (SamAutomaticMaskGenerator, SamPredictor,
                               sam_model_registry)
 
+def get_annotation(mask, image=None):
+    eps = 0.0010
+    # the findCountours function was originally supploed the RETR_TREE argument instead of the RETR_LIST, the change is mainly experimental
+    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    segmentation = []
+    for contour in contours:
+
+        # Valid polygons have >= 6 coordinates (3 points)
+        # print("initial length of contour", contour.size)
+        if contour.size >= 6:
+            peri = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, eps * peri, True)
+            # print("length approximated:", len(approx))
+            # cv2.drawContours(image, [approx], -1, (0, 255, 0), 3)
+            # plt.imshow(image)
+            # plt.show()
+            segmentation.append(contour.flatten().tolist())
+    if len(segmentation) == 0:
+        return segmentation, [0, 0, 0, 0], 0.0
+    RLEs = cocomask.frPyObjects(segmentation, mask.shape[0], mask.shape[1])
+    RLE = cocomask.merge(RLEs)
+    # RLE = cocomask.encode(np.asfortranarray(mask))
+    area = cocomask.area(RLE)
+    [x, y, w, h] = cv2.boundingRect(mask)
+
+    # if image is not None:
+    #     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    #     cv2.drawContours(image, contours, -1, (0, 255, 0), -1)
+    #     cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    #     cv2.imwrite(
+    #         "/media/likhith/Data/mowito/mmdeploy/mw_mmdetection/testt.png", image
+    #     )
+
+    return segmentation, [x, y, w, h], area
 
 class App:
     def __init__(self, master):
         self.master = master
         self.dir_path = ""
         self.image_list = []
-        self.current_image_idx = 1
+        self.current_image_idx = 0
         self.bbox_coords = []
         self.box_coordinates = []
         self.point_of_interest = []
@@ -59,7 +95,9 @@ class App:
 
     def load_images(self):
         self.dir_path = filedialog.askdirectory()
-        self.image_list = [os.path.join(self.dir_path, f) for f in os.listdir(self.dir_path) if f.endswith(".png")]
+        print("self.dir_path",self.dir_path)
+        self.image_list = [os.path.join(self.dir_path, f) for f in os.listdir(self.dir_path) if f.endswith(".jpg")]
+        print("number of images loaded:",len(self.image_list))
         self.load_image()
         
     def load_image(self):
@@ -104,18 +142,23 @@ class App:
             mask_image = Image.new("L", (self.width, self.height), 0)
             ImageDraw.Draw(mask_image).polygon(polygon, outline=1, fill=1)
             binary_mask = np.array(mask_image)
-            coco_polygon = [int(point) for tuple in polygon for point in tuple]
-            rows = np.any(binary_mask, axis=1)
-            cols = np.any(binary_mask, axis=0)
-            y1, y2 = np.where(rows)[0][[0, -1]]
-            x1, x2 = np.where(cols)[0][[0, -1]]
+            
+            segmentation, bbox, area = get_annotation(binary_mask)
+            
+            
+            # coco_polygon = [int(point) for tuple in polygon for point in tuple]
+            # rows = np.any(binary_mask, axis=1)
+            # cols = np.any(binary_mask, axis=0)
+            # y1, y2 = np.where(rows)[0][[0, -1]]
+            # x1, x2 = np.where(cols)[0][[0, -1]]
+
             annotation = {
                 "id": self.annotation_id,
                 "image_id": image_id,
                 "category_id": self.category_id,
-                "segmentation": coco_polygon,
-                "area": int(np.sum(binary_mask)),
-                "bbox": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+                "segmentation": segmentation,
+                "area": float(area), #int(np.sum(binary_mask)),
+                "bbox": bbox, #[int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
                 "iscrowd": 0,
                 "attributes": {"occluded": False}
             }
@@ -127,7 +170,7 @@ class App:
         # json_file_path = filedialog.askdirectory()
         json_file_path = "annotations.json"
         with open(json_file_path, "w") as f:
-            json.dump(self.coco_dict, f)
+            json.dump(self.coco_dict, f, indent=4)
         print("Annotations saved!")
 
     def delete_last_polygon(self, event):
@@ -156,12 +199,21 @@ class App:
         mask = mask.astype(np.uint8)
         _, mask = cv2.threshold(mask, 0.5, 255, cv2.THRESH_BINARY)
 
+        # segmentation = []
+
         # Find the contour of the mask
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         max_contour = max(contours, key=cv2.contourArea)
         epsilon = 0.005 * cv2.arcLength(max_contour, True)
         approx = cv2.approxPolyDP(max_contour, epsilon, True)
+
+        # segmentation.append(approx.flatten().tolist())
+
+        # RLEs = cocomask.frPyObjects(segmentation,mask.shape[0],mask.shape[1])
+        # RLE = cocomask.merge(RLEs)
+        # area = cocomask.area(RLE)
+        # [x,y,w,h] = cv2.boundingRect(mask)
 
         # Convert the polygon points to a list of tuples
         polygon = [tuple(point[0]) for point in approx]
@@ -181,23 +233,36 @@ class App:
     def run_point_sam(self,event):
         input_point = np.array(self.point_of_interest)
         input_label = np.array([1]*len(self.point_of_interest))
-        masks, _, _ = self.mask_predictor.predict(
-            point_coords=input_point,
-            point_labels=input_label,
-            multimask_output=False,
-            )
+        try:
+            masks, _, _ = self.mask_predictor.predict(
+                point_coords=input_point,
+                point_labels=input_label,
+                multimask_output=False,
+                )
+        except IndexError:
+            print("index out of range, saving annotation file")
+            self.save_annotations()
+            exit()
         self.point_of_interest = []
         self.display_image_and_polygon(masks[0])
 
     def next_image(self):
         self.to_coco(self.previous_polygons)
+        print("coco annotation status:")
+        print("number of images:",len(self.coco_dict['images']))
+        print("total number of anns:",len(self.coco_dict['annotations']))
+
         self.previous_polygons = []
         self.box_coordinates = []
         self.point_of_interest = []
         self.current_image_idx += 1
         if self.current_image_idx >= len(self.image_list):
+            print("looped over all images")
             self.current_image_idx = 0
-        self.load_image()
+            self.save_annotations()
+            exit()
+        else:
+            self.load_image()
 
 if __name__ == '__main__':
     root = tk.Tk()
