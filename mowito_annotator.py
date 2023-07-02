@@ -93,6 +93,10 @@ class App:
         print(f"Category ID updated to {self.category_id}")
         self.canvas.focus_set()
 
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        print("Main Window is closing, call any function you'd like here!")
+
+
     def load_images(self):
         self.dir_path = filedialog.askdirectory()
         print("self.dir_path",self.dir_path)
@@ -239,12 +243,13 @@ class App:
                 point_labels=input_label,
                 multimask_output=False,
                 )
+            self.point_of_interest = []
+            self.display_image_and_polygon(masks[0])
         except IndexError:
-            print("index out of range, saving annotation file")
-            self.save_annotations()
-            exit()
-        self.point_of_interest = []
-        self.display_image_and_polygon(masks[0])
+            print("index out of range")
+            #self.save_annotations()
+            #exit()
+        
 
     def next_image(self):
         self.to_coco(self.previous_polygons)
@@ -268,7 +273,11 @@ if __name__ == '__main__':
     root = tk.Tk()
     torch.cuda.empty_cache()
     CHECKPOINT_PATH = filedialog.askopenfilename()
-    print(CHECKPOINT_PATH, "; exist:", os.path.isfile(CHECKPOINT_PATH))
+    try:
+        print(CHECKPOINT_PATH, "; exist:", os.path.isfile(CHECKPOINT_PATH))
+    except TypeError:
+        print("input not given, closing")
+        exit()
     # DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     DEVICE = 'cpu'
     MODEL_TYPE = "vit_h"
